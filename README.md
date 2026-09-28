@@ -14,7 +14,7 @@ Sistema inicial de costos, recetas, proyección, ventas e inventario para:
 6. Use Respaldo para exportar/importar toda la información en JSON.
 
 ## Persistencia actual
-Esta primera versión guarda los datos en `localStorage` del navegador. No usa cuentas ni autenticación. Está estructurada para migrar posteriormente a Supabase/Postgres sin cambiar el modelo funcional.
+Los datos se sincronizan globalmente con Supabase mediante una fila compartida en `public.restoops_state`. El navegador conserva una copia local como caché/fallback si se pierde la conexión. Esta versión todavía no usa cuentas ni autenticación, por lo que todos los dispositivos que abran la aplicación comparten el mismo estado.
 
 ## Cálculos
 - Costo base = costo total de compra / cantidad normalizada.
