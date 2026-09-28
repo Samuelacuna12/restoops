@@ -22,7 +22,7 @@
     <button data-view="inventory">▦ <span>Inventario</span></button>
     <button data-view="backup">↥ <span>Respaldo</span></button>
   </nav>
-  <div class="side-bottom"><div class="storage-note">Versión inicial sin usuarios. Los datos se guardan únicamente en este navegador.</div></div>
+  <div class="side-bottom"><div class="storage-note" id="storageNote">Conectando con la nube…</div></div>
 </aside>
 <main class="main">
 <header class="topbar">
@@ -74,7 +74,7 @@
   </div>
 
   <div id="backup" class="view">
-    <div class="page-head"><div><h2>Respaldo y configuración</h2><p>Exporta toda la información antes de cambiar de equipo o navegador.</p></div></div>
+    <div class="page-head"><div><h2>Respaldo y configuración</h2><p>Los datos se sincronizan globalmente. También puedes descargar un respaldo manual.</p></div></div>
     <div class="workspace"><div class="section-grid"><div class="card"><h3>Respaldo de datos</h3><p class="help">Descarga un JSON con restaurantes, ingredientes, recetas y ventas.</p><div class="actions"><button class="btn btn-primary" id="exportBtn">Exportar respaldo</button><label class="btn btn-secondary file-label">Importar respaldo<input type="file" id="importFile" accept="application/json"></label></div></div><div class="card"><h3>Reiniciar sistema</h3><p class="help">Borra todos los ingredientes, platos y ventas. Los tres restaurantes permanecen.</p><button class="btn btn-danger" id="resetBtn">Borrar todos los datos</button></div></div><div class="card" style="margin-top:14px"><h3>Cómo usar RestoOps</h3><div class="help-steps"><div class="help-step"><b>1. Ingredientes</b><span>Registra la compra real: por ejemplo, cantidad comprada, unidad y costo total. El sistema obtiene el costo unitario automáticamente.</span></div><div class="help-step"><b>2. Platos</b><span>Crea cada producto y agrega cuánto usa de cada ingrediente. Define su precio de venta y, si quieres, un margen objetivo.</span></div><div class="help-step"><b>3. Proyección</b><span>Indica cuántos platos quieres vender. Verás cuánto necesitas de cada ingrediente, inversión, venta y utilidad estimada.</span></div><div class="help-step"><b>4. Ventas reales</b><span>Al finalizar o durante el día registra las unidades vendidas. El dashboard calcula costo, utilidad, margen y descuenta inventario.</span></div></div></div></div>
   </div>
 </section>
@@ -92,10 +92,65 @@
 const RESTAURANTS={"asu-mare":"Asu Mare","oh-my-chicken":"Oh My Chicken","don-arroz":"Don Arroz"};
 const MASS={kg:1000,lb:453.59237,g:1,oz:28.349523125}; const VOLUME={l:1000,ml:1};
 const STORAGE_KEY='restoops_v1';
-let state=load(); let filter='all';
+const PRE_CLOUD_BACKUP_KEY='restoops_v1_precloud_backup';
+const SUPABASE_URL='https://ntafomzqtjdfslanggak.supabase.co';
+const SUPABASE_KEY='sb_publishable_IBdKw7gD078zjvB38UWcVQ_dyV4lI9s';
+const CLOUD_ENDPOINT=SUPABASE_URL+'/rest/v1/restoops_state';
+const CLOUD_ROW='global';
+let state=load(); let filter='all'; let cloudUpdatedAt=null; let cloudQueue=Promise.resolve();
+
 function blank(){return {version:1,ingredients:[],recipes:[],sales:[]}}
 function load(){try{return {...blank(),...JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')}}catch(e){return blank()}}
-function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state));renderAll()}
+function hasData(s){return !!((s?.ingredients?.length||0)+(s?.recipes?.length||0)+(s?.sales?.length||0))}
+function setCloudStatus(msg){const el=document.getElementById('storageNote');if(el)el.textContent=msg}
+async function cloudFetch(){
+  const res=await fetch(CLOUD_ENDPOINT+'?id=eq.'+CLOUD_ROW+'&select=payload,updated_at',{headers:{apikey:SUPABASE_KEY}});
+  if(!res.ok)throw new Error('Cloud read failed '+res.status);
+  const rows=await res.json();
+  return rows[0]||null;
+}
+async function cloudSave(){
+  const snapshot=JSON.parse(JSON.stringify(state));
+  const stamp=new Date().toISOString();
+  const res=await fetch(CLOUD_ENDPOINT+'?id=eq.'+CLOUD_ROW,{
+    method:'PATCH',
+    headers:{apikey:SUPABASE_KEY,'Content-Type':'application/json','Prefer':'return=minimal'},
+    body:JSON.stringify({payload:snapshot,updated_at:stamp})
+  });
+  if(!res.ok)throw new Error('Cloud write failed '+res.status);
+  cloudUpdatedAt=stamp;
+  setCloudStatus('Datos globales · sincronizados en la nube');
+}
+async function syncFromCloud(initial=false){
+  try{
+    setCloudStatus(initial?'Conectando con la nube…':'Sincronizando…');
+    const row=await cloudFetch();
+    if(!row){setCloudStatus('Nube sin inicializar');return}
+    const remote={...blank(),...(row.payload||{})};
+    if(initial&&hasData(state)&&!hasData(remote)){
+      await cloudSave();
+      return;
+    }
+    const different=JSON.stringify(remote)!==JSON.stringify(state);
+    if(initial&&hasData(state)&&different&&!localStorage.getItem(PRE_CLOUD_BACKUP_KEY)){
+      localStorage.setItem(PRE_CLOUD_BACKUP_KEY,JSON.stringify(state));
+    }
+    if(different){
+      state=remote;
+      localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+      renderAll();
+    }
+    cloudUpdatedAt=row.updated_at||null;
+    setCloudStatus('Datos globales · sincronizados en la nube');
+  }catch(err){
+    setCloudStatus('Sin conexión · trabajando con copia local');
+  }
+}
+function save(){
+  localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+  renderAll();
+  cloudQueue=cloudQueue.then(()=>cloudSave()).catch(()=>setCloudStatus('Sin conexión · cambios guardados localmente'));
+}
 function uid(){return crypto?.randomUUID?.()||('id_'+Date.now()+'_'+Math.random().toString(36).slice(2))}
 function money(n){return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(Number(n)||0)}
 function num(n,d=2){return new Intl.NumberFormat('es-CO',{maximumFractionDigits:d}).format(Number(n)||0)}
@@ -155,8 +210,11 @@ function empty(msg){return `<div class="empty"><div class="big">○</div>${msg}<
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c]))}
 document.getElementById('exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`restoops-respaldo-${today()}.json`;a.click();URL.revokeObjectURL(a.href)};
 document.getElementById('importFile').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;try{const parsed=JSON.parse(await f.text());if(!parsed||!Array.isArray(parsed.ingredients)||!Array.isArray(parsed.recipes)||!Array.isArray(parsed.sales))throw new Error();if(confirm('Esto reemplazará los datos actuales. ¿Continuar?')){state={...blank(),...parsed};save();toast('Respaldo importado')}}catch(err){alert('El archivo no es un respaldo válido de RestoOps.')}e.target.value=''});
-document.getElementById('resetBtn').onclick=()=>{if(confirm('¿Seguro? Esta acción borrará todos los datos guardados en este navegador.')){state=blank();save();toast('Sistema reiniciado')}};
+document.getElementById('resetBtn').onclick=()=>{if(confirm('¿Seguro? Esta acción borrará los datos globales para todos los dispositivos.')){state=blank();save();toast('Sistema reiniciado')}};
 renderAll();
+syncFromCloud(true);
+window.addEventListener('focus',()=>{cloudQueue.then(()=>syncFromCloud(false))});
+setInterval(()=>{if(document.visibilityState==='visible')cloudQueue.then(()=>syncFromCloud(false))},30000);
 </script>
 </body>
 </html>
